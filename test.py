@@ -5,6 +5,8 @@ from models import create_model
 from util.visualizer import save_images
 from util import html
 
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 if __name__ == '__main__':
     opt = TestOptions().parse()

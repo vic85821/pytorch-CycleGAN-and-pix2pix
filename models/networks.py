@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.nn import init
 import functools
 from torch.optim import lr_scheduler
+import torchvision.models.vgg as vgg
 
 ###############################################################################
 # Helper Functions
@@ -83,6 +84,8 @@ def define_G(input_nc, output_nc, ngf, netG, norm='batch', use_dropout=False, in
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == 'unet_256':
         net = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
+    elif netG == 'beautyGAN':
+        net = BeautyGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
     else:
         raise NotImplementedError('Generator model name [%s] is not recognized' % netG)
     return init_net(net, init_type, init_gain, gpu_ids)
@@ -134,7 +137,106 @@ class GANLoss(nn.Module):
         target_tensor = self.get_target_tensor(input, target_is_real)
         return self.loss(input, target_tensor)
 
+    
+class BeautyGenerator(nn.Module):
+    def __init__(self, input_nc, output_nc, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks=6, padding_type='reflect'):
+        assert(n_blocks >= 0)
+        super(BeautyGenerator, self).__init__()
+        self.input_nc = input_nc
+        self.output_nc = output_nc
+        self.ngf = ngf
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
 
+        # model_in: extractor
+        modelIn_A = [nn.ReflectionPad2d(3),
+                     nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0,
+                               bias=use_bias),
+                     norm_layer(ngf),
+                     nn.ReLU(True)]
+        modelIn_B = [nn.ReflectionPad2d(3),
+                     nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0,
+                               bias=use_bias),
+                     norm_layer(ngf),
+                     nn.ReLU(True)]
+        
+        n_downsampling = 2
+        for i in range(n_downsampling):
+            mult = 2**i
+            modelIn_A += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3,
+                                    stride=2, padding=1, bias=use_bias),
+                          norm_layer(ngf * mult * 2),
+                          nn.ReLU(True)]
+            modelIn_B += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3,
+                                    stride=2, padding=1, bias=use_bias),
+                          norm_layer(ngf * mult * 2),
+                          nn.ReLU(True)]
+            
+        # base: share weight
+        mult = 2**n_downsampling
+        for i in range(n_blocks):
+            if i == 0:
+                base = [ResnetBlock(ngf * mult * 2, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+            else:
+                base += [ResnetBlock(ngf * mult * 2, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
+        
+        # model_out: decoder
+        for i in range(n_downsampling):
+            mult = 2**(n_downsampling - i)
+            if i == 0:
+                modelOut_A = [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
+                                                 kernel_size=3, stride=2,
+                                                 padding=1, output_padding=1,
+                                                 bias=use_bias),
+                              norm_layer(int(ngf * mult / 2)),
+                              nn.ReLU(True)]
+                modelOut_B = [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
+                                                 kernel_size=3, stride=2,
+                                                 padding=1, output_padding=1,
+                                                 bias=use_bias),
+                              norm_layer(int(ngf * mult / 2)),
+                              nn.ReLU(True)]
+            else:
+                modelOut_A += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
+                                                  kernel_size=3, stride=2,
+                                                  padding=1, output_padding=1,
+                                                  bias=use_bias),
+                               norm_layer(int(ngf * mult / 2)),
+                               nn.ReLU(True)]
+                modelOut_B += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2),
+                                                  kernel_size=3, stride=2,
+                                                  padding=1, output_padding=1,
+                                                  bias=use_bias),
+                               norm_layer(int(ngf * mult / 2)),
+                               nn.ReLU(True)]
+        
+        modelOut_A += [nn.ReflectionPad2d(3)]
+        modelOut_A += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
+        modelOut_A += [nn.Tanh()]
+        
+        modelOut_B += [nn.ReflectionPad2d(3)]
+        modelOut_B += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
+        modelOut_B += [nn.Tanh()]
+
+        self.modelIn_A = nn.Sequential(*modelIn_A)
+        self.modelIn_B = nn.Sequential(*modelIn_B)
+        self.base = nn.Sequential(*base)
+        self.modelOut_A = nn.Sequential(*modelOut_A)
+        self.modelOut_B = nn.Sequential(*modelOut_B)
+
+    def forward(self, input1, input2):
+        m1 = self.modelIn_A(input1)
+        m2 = self.modelIn_B(input2)
+        x = torch.cat((m1, m2), 1)
+        x = self.base(x)
+        x = torch.chunk(x, 2, 1)
+        m1 = self.modelOut_A(x[0])
+        m2 = self.modelOut_B(x[1])
+        return m1, m2
+
+    
 # Defines the generator that consists of Resnet blocks between a few
 # downsampling/upsampling operations.
 # Code and idea originally from Justin Johnson's architecture.
@@ -185,8 +287,7 @@ class ResnetGenerator(nn.Module):
 
     def forward(self, input):
         return self.model(input)
-
-
+        
 # Define a resnet block
 class ResnetBlock(nn.Module):
     def __init__(self, dim, padding_type, norm_layer, use_dropout, use_bias):

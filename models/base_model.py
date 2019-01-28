@@ -23,6 +23,7 @@ class BaseModel():
         self.save_dir = os.path.join(opt.checkpoints_dir, opt.name)
         if opt.resize_or_crop != 'scale_width':
             torch.backends.cudnn.benchmark = True
+        self.imgSize = opt.fineSize
         self.loss_names = []
         self.model_names = []
         self.visual_names = []
