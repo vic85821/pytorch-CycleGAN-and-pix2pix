@@ -1,3 +1,10 @@
+# Implementation of the beautyGAN
+original paper link: https://liusi-group.com/pdf/BeautyGAN-camera-ready.pdf
+
+This is the project about the human makeup transformation with cycle-gan. The model can transfer one person's face make-up to the other's. So it can put on and remove makeup at the same time.
+
+**Implement with the following package**
+---------------------
 <img src='imgs/horse2zebra.gif' align="right" width=384>
 
 <br><br><br>
